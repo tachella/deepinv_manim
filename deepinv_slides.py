@@ -1,10 +1,13 @@
 import torch
 from manim import *
+import sys
+import os
+sys.path.insert(1, '/projects/UDIP/deepinv')
 import deepinv as dinv
 from helper_funcs import find_operator, get_dataset, get_params, get_unrolled
-import os
 
 def torch2np(x):
+    x[x==0] = .1
     return np.uint8(255*x[0, :, :, :].detach().permute(1, 2, 0).cpu().numpy())
 
 total_slide_time = 20 # in seconds
@@ -32,6 +35,130 @@ def code(operator_string, methods):
     '''
     code += '''modelx(y, physics) '''
     return code
+
+
+
+class DeepInvOptim(Scene):
+    def get_image(self, x, title, height=4., label_scale=.3):
+        img = ImageMobject(torch2np(x))
+        img.add(Text(title).scale(label_scale).next_to(img, .2*UP))
+        img.height = height
+        return img
+
+    def my_construct(self, y, imgs, graph, code):
+        fps = 5
+        frame_int = max(1, int(len(imgs)/(total_slide_time*fps)))
+        n_frames = int(len(imgs)/frame_int)
+        print(f'frame_int: {frame_int}, n_frames: {n_frames}')
+
+        axes = Axes(x_range=[0, len(imgs), int(len(imgs)/6)], y_range=[0, 35, 5], x_length=7, y_length=6).add_coordinates()
+        axes.height = 6
+        axes.width = 4
+        self.add(axes)
+        axes.shift(5*RIGHT).shift(1 * UP)
+        title = Text("PSNR [dB]").next_to(axes, UP)
+        title.scale(.6)
+        self.add(title)
+        listx = []
+        listy = []
+        k = 0
+        rendered_code = Code(code=code, tab_width=4, background="window",
+                             language="Python", font="Monospace").shift(2 * DOWN).scale(0.7)
+        meas = self.get_image(y, title='measurement').shift(5*LEFT).shift(1 * UP)
+        self.add(meas)
+        self.add(rendered_code)
+
+        for f in range(n_frames):
+            x = imgs[f*frame_int]
+            point = graph[f*frame_int]
+            img = self.get_image(x, title='estimate').shift(1 * UP)
+            self.add(img)
+            listx.append(k*frame_int)
+            listy.append(point)
+            line = axes.plot_line_graph(listx, listy, add_vertex_dots=False, stroke_width=.5)
+            self.add(line)
+            self.wait(total_slide_time/n_frames)
+            self.remove(img)
+            self.remove(line)
+            k += 1
+
+
+        x = imgs[-1]
+        point = graph[-1]
+        img = self.get_image(x, title='estimate').shift(1 * UP)
+        self.add(img)
+        listx.append(len(imgs))
+        listy.append(point)
+        line = axes.plot_line_graph(listx, listy, add_vertex_dots=False, stroke_width=.5)
+        self.add(line)
+        self.wait(1)
+
+
+class DeepInvSampling(Scene):
+    def get_image(self, x, title, height=4., label_scale=.3):
+        img = ImageMobject(torch2np(x), resampling_algorithm=RESAMPLING_ALGORITHMS["cubic"])
+        img.add(Text(title).scale(label_scale).next_to(img, .2*UP))
+        img.height = height
+        return img
+
+    def create_histogram(self, data, length=4, bins=16, drange=(0, 1), xlabel="PSNR [dB]"):
+        # Define histogram parameters
+        bin_width = length/bins
+
+        bin_height = bin_width
+        hist, bin_edges = np.histogram(data, bins=bins, range=drange)
+        # Create a list of bars
+        bars = VGroup()
+        for i in range(len(hist)):
+            count = hist[i]
+            bar = Rectangle(
+                height=count * bin_height,
+                width=bin_width,
+                fill_opacity=0.7,
+            ).shift(i * bin_width * RIGHT + bin_height * count * UP / 2)
+            bars.add(bar)
+
+        # Create histogram axes
+        x_axis = NumberLine(x_range=np.round([bin_edges[0], bin_edges[-1], bin_edges[2]-bin_edges[0]], 2), length=length,
+                            font_size=16,
+                            include_numbers=True).move_to(bars.get_bottom() + bin_height/2 * DOWN)
+        #y_axis = NumberLine(x_range=[0, max(data) + 1], include_numbers=True).next_to(x_axis_label, UP)
+
+        x_axis_label = Text(xlabel).next_to(x_axis, .5 * DOWN).scale(.4)
+        # Group elements
+        histogram = VGroup(x_axis, x_axis_label, bars)
+
+        return histogram
+
+    def my_construct(self, y, imgs, graph, code):
+        fps = 5
+        frame_int = max(1, int(len(imgs)/(total_slide_time*fps)))
+        n_frames = int(len(imgs)/frame_int)
+
+        rendered_code = Code(code=code, tab_width=4, background="window",
+                             language="Python", font="Monospace").shift(2 * DOWN).scale(0.7)
+        meas = self.get_image(y, title='measurement').shift(5*LEFT).shift(1 * UP)
+        self.add(meas)
+        self.add(rendered_code)
+
+        k = 0
+        for f in range(1, n_frames):
+            x = imgs[f*frame_int]
+            img = self.get_image(x, title='posterior sample').shift(1 * UP)
+            self.add(img)
+            hist = self.create_histogram(graph[:f], drange=(min(graph), max(graph))).shift(3*RIGHT)
+
+            #title = Text("PSNR [dB]").next_to(hist, UP)
+            #title.scale(.6)
+            #self.add(title)
+            self.add(hist)
+            self.wait(total_slide_time/n_frames)
+            self.remove(img)
+            self.remove(hist)
+            #self.remove(title)
+            k += 1
+
+
 
 
 class DeepInvSlide(Scene):
@@ -91,7 +218,7 @@ class DeepInvSlide(Scene):
                 self.add_image(x_unfold, "unfolded", height=height, label_scale=label_scale)
 
             if "diffusion" in methods:
-                diffusion_model = dinv.sampling.DDRM(denoiser=drunet, sigma_noise=.01)
+                diffusion_model = dinv.sampling.DDRM(denoiser=drunet)
                 x_diff = diffusion_model(y + torch.randn_like(y)*.01, physics)
                 self.add_image(x_diff, "diffusion", height=height, label_scale=label_scale)
 
@@ -108,6 +235,109 @@ class DeepInvSlide(Scene):
             self.remove(g)
             self.remove(tex)
             self.remove(rendered_code)
+
+
+
+class DPS(DeepInvOptim):
+    def construct(self):
+        device = 'cuda:0'
+        dataset = get_dataset("inpainting")
+        x = dataset[56][0].unsqueeze(0).to(device)
+        model = dinv.sampling.DPS(model=dinv.models.DiffUNet().to(device), data_fidelity=dinv.optim.L2(), verbose=True,
+                                  save_iterates=True, device=device, max_iter=1000)
+        physics = dinv.physics.Inpainting(tensor_size=x.shape[1:], mask=.3, device=device,
+                                          noise_model=dinv.physics.GaussianNoise(sigma=.05))
+        y = physics(x)
+        imgs = model(y, physics)
+
+        imgs = imgs[700:]
+
+        code = '''
+        import deepinv as dinv
+        model = dinv.sampling.DPS(model=dinv.models.DiffUNet())
+        xhat = model(y, physics)
+        '''
+        psnr = []
+        for k, img in enumerate(imgs):
+            psnr.append(dinv.utils.cal_psnr(img.to(device), x))
+
+        self.my_construct(physics.A_adjoint(y), imgs, psnr, code)
+
+
+class ULA(DeepInvSampling):
+    def construct(self):
+        device = 'cuda:0'
+        dataset = get_dataset("inpainting")
+        x = dataset[22][0].unsqueeze(0).to(device)
+
+        prior = dinv.optim.ScorePrior(dinv.models.DnCNN(pretrained='download_lipschitz').to(device))
+        sigma = 0.01
+        sigma_den = 0.02
+        burnin = .3
+        MC = 100
+        thinning = 30
+        norm = 1.
+        alpha = 20*torch.tensor(norm, device=device)
+
+        step_size = float(1. / (norm / (sigma ** 2) + alpha / (sigma_den ** 2)))
+        model = dinv.sampling.ULA(prior, data_fidelity=dinv.optim.L2(sigma), step_size=step_size,
+                                  sigma=sigma_den, alpha=alpha, verbose=True,
+                                  max_iter=int(MC * thinning / (.95 - burnin)),
+                                  thinning=thinning, save_chain=True, burnin_ratio=burnin, clip=(-1., 2),
+                                  thresh_conv=1e-4)
+
+        #mask = torch.ones_like(x).squeeze(0)
+        #mask[:, 120:140, :] = 0
+        mask = .3
+        physics = dinv.physics.Inpainting(tensor_size=x.shape[1:], mask=mask, device=device,
+                                          noise_model=dinv.physics.GaussianNoise(sigma=sigma))
+        y = physics(x)
+        mean, var = model(y, physics)
+
+        imgs = model.get_chain()
+
+        code = '''
+        import deepinv as dinv
+        model = dinv.sampling.ULA(...)
+        xhat = model(y, physics)
+        '''
+        psnr = []
+        for k, img in enumerate(imgs):
+            psnr.append(dinv.utils.cal_psnr(img.to(device), mean))
+
+        self.my_construct(physics.A_adjoint(y), imgs, psnr, code)
+
+
+class DiffSamples(DeepInvSampling):
+    def construct(self):
+        device = 'cuda:0'
+        dataset = get_dataset("inpainting")
+        x = dataset[22][0].unsqueeze(0).to(device)
+
+        sigma = 0.01
+
+        diff = dinv.sampling.DDRM(dinv.models.DRUNet().to(device))
+        model = dinv.sampling.DiffusionSampler(diff, max_iter=100, save_chain=True)
+
+        mask = .3
+        physics = dinv.physics.Inpainting(tensor_size=x.shape[1:], mask=mask, device=device,
+                                          noise_model=dinv.physics.GaussianNoise(sigma=sigma))
+        y = physics(x)
+        mean, var = model(y, physics)
+
+        imgs = model.get_chain()
+
+        code = '''
+        import deepinv as dinv
+        model = dinv.sampling.DDRM(...)
+        xhat = model(y, physics)
+        '''
+        psnr = []
+        for k, img in enumerate(imgs):
+            psnr.append(dinv.utils.cal_psnr(img.to(device), mean))
+
+        self.my_construct(physics.A_adjoint(y), imgs, psnr, code)
+
 
 
 class Inpainting(DeepInvSlide):

@@ -21,7 +21,7 @@ def get_dataset(operator, test_train=False):
     if operator == 'Tomography':
         tfs = transforms.Compose([transforms.ToTensor(), transforms.Resize((128, 128)), transforms.Grayscale(1)])
     else:
-        tfs = transforms.Compose([transforms.ToTensor(), transforms.Resize((128, 128))])
+        tfs = transforms.Compose([transforms.ToTensor(), transforms.Resize((256, 256))])
     # dataset = datasets.MNIST(root='/projects/UDIP/deepinv/datasets/', train=False, transform=transforms.ToTensor())
 
     if test_train:
